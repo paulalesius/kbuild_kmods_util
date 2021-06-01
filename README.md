@@ -3,8 +3,8 @@
 This utility will print which of the kernel modules are loaded by the running kernel so that you can filter unnecessary modules from the kernel configuration to build the kernel faster from source.
 
 ## Building & running
-    cargo build --release
-    target/release/kbuild_kmods_util
+    $ cargo build --release
+    $ target/release/kbuild_kmods_util $(uname -r)
     
 ## Output
     Loaded modules (150):

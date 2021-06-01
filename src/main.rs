@@ -23,11 +23,9 @@ fn read_dir<P>(dir: P, kmods: &mut Vec<String>) -> io::Result<()> where P: AsRef
     Ok(())
 }
 
-fn find_insertable_kmods() -> Vec<String> {
-    // Find kernel dir
-    let uts = Uname::new().expect("Uname not working");
-    println!("Kernel release: {}", uts.release);
-    let kdir = PathBuf::from(format!("/lib/modules/{}", uts.release));
+fn find_insertable_kmods(kver: &str) -> Vec<String> {
+    println!("Kernel release: {}", kver);
+    let kdir = PathBuf::from(format!("/lib/modules/{}", kver));
 
     // Read kernel dir recursive
     let mut kmods: Vec<String> = Vec::new();
@@ -102,7 +100,15 @@ fn main() {
     println!("Loaded kmods: {}", loaded_kmods.len());
 
     // Load each available .ko file as a Module
-    let kmod_files = find_insertable_kmods();
+    let args: Vec<String> = std::env::args().collect();
+    let kmod_files = match args.get(1) {
+        Some(kver) => find_insertable_kmods(kver.as_str()),
+        None => {
+            let uts = Uname::new().expect("Uname not working");
+            find_insertable_kmods(uts.release.as_str())
+        }
+    };
+
     let available_kmods: Vec<kmod::Module> = kmod_files.iter().map(|path| ctx.module_new_from_path(path).unwrap()).collect();
     println!("Available kmods: {}", available_kmods.len());
 
