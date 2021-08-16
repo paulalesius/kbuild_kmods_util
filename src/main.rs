@@ -1,118 +1,120 @@
-use kmod;
+use clap::{App, Arg, SubCommand};
+use std::collections::HashSet;
+use std::fs;
+use std::iter::Iterator;
+use std::path::{Path, PathBuf};
 use uname_rs::Uname;
-use std::path::{PathBuf, Path};
-use std::{io, fs};
-use std::vec::Vec;
 
-/***
- * Recursive .ko file search in kernel dir
- **/
-fn read_dir<P>(dir: P, kmods: &mut Vec<String>) -> io::Result<()> where P: AsRef<Path> {
-
-    for entry in fs::read_dir(dir.as_ref())? {
-        let path: &Path = &entry?.path();
-
-        if path.is_dir() {
-
-            read_dir(path, kmods)?;
-        } else if path.to_str().unwrap().ends_with("ko") {
-
-            kmods.push(path.to_str().unwrap().to_string());
-        }
-    }
-    Ok(())
-}
-
-fn find_insertable_kmods(kver: &str) -> Vec<String> {
-    println!("Kernel release: {}", kver);
-    let kdir = PathBuf::from(format!("/lib/modules/{}", kver));
-
-    // Read kernel dir recursive
-    let mut kmods: Vec<String> = Vec::new();
-    if kdir.is_dir() {
-        match read_dir(&kdir, &mut kmods) {
-            Err(err) => panic!("Recursive kmod search error: {}", err),
-            _ => {}
+fn read_disk_kmods_recursive(
+    ctx: &kmod::Context,
+    loaded_kmods: &HashSet<String>,
+    disk_kmods: &mut HashSet<String>,
+    path: &Path,
+) {
+    if path.is_dir() {
+        for entry in fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            read_disk_kmods_recursive(ctx, loaded_kmods, disk_kmods, &entry.path());
         }
     } else {
-        panic!("Kernel directory does not exist: {}", kdir.to_str().unwrap());
+        let path = path.to_str().unwrap();
+        if path.contains(".ko") {
+            let modpath = path_to_modpath(Some(path));
+            disk_kmods.insert(modpath);
+        }
     }
-    kmods
 }
 
-fn print_kmods_orderly(title: &str, kmods: Vec<&kmod::Module>) {
-
-    println!("{} ({}):", title, kmods.len());
-    kmods.iter().for_each(|m| println!("\t{}: {}", m.path().unwrap(), m.name()));
+fn read_disk_kmods(
+    ctx: &kmod::Context,
+    loaded_kmods: &HashSet<String>,
+    disk_kmods: &mut HashSet<String>,
+    release: &str,
+) {
+    let kmod_dir = PathBuf::from(format!("/lib/modules/{}/kernel", release));
+    read_disk_kmods_recursive(ctx, loaded_kmods, disk_kmods, &kmod_dir);
 }
 
-/***
- ** Filter them into three groups, loaded, not loaded, and loaded but not on disk. And
- ** yes I know, no set optimizations are needed for a 100 millisecond execution.
- **/
-fn which_kmods_are_loaded(loaded_kmods: &Vec<kmod::Module>, disk_kmods: &Vec<kmod::Module>) {
-
-    let mut loaded: Vec<&kmod::Module> = Vec::new();
-    let mut not_loaded: Vec<&kmod::Module> = Vec::new();
-    let mut loaded_not_on_disk: Vec<&kmod::Module> = Vec::new();
-
-    // For loaded and not loaded
-    for disk_kmod in disk_kmods {
-        let mut l: bool = false;
-        for loaded_kmod in loaded_kmods {
-            if loaded_kmod.name().eq(disk_kmod.name()) {
-                l = true;
-                break;
-            }
-        }
-        if l {
-            loaded.push(&disk_kmod);
-        } else {
-            not_loaded.push(&disk_kmod);
-        }
+fn path_to_modpath(path_str: Option<&str>) -> String {
+    let mut path_str = path_str.unwrap();
+    for _ in 0..4 {
+        path_str = path_str.split_at(path_str.find('/').unwrap() + 1).1;
     }
+    path_str.to_string()
+}
 
-    // For loaded but not on disk
-    for loaded_kmod in loaded_kmods {
-        let mut d: bool = false;
-        for disk_kmod in disk_kmods {
-            if loaded_kmod.name().eq(disk_kmod.name()) {
-                d = true;
-                break;
-            }
-        }
-        if !d {
-            loaded_not_on_disk.push(loaded_kmod);
-        }
-    }
-
-    print_kmods_orderly("Loaded modules", loaded);
-    print_kmods_orderly("Not loaded modules", not_loaded);
-    print_kmods_orderly("Loaded but not on disk", loaded_not_on_disk);
+fn read_builtins(loaded_kmods: &mut HashSet<String>, release: &str) {
+    std::fs::read_to_string(format!("/lib/modules/{}/modules.builtin", release))
+        .unwrap()
+        .lines()
+        .for_each(|l| {
+            loaded_kmods.insert(l.to_string());
+        });
 }
 
 fn main() {
+    let release = Uname::new().unwrap().release;
+    let release = release.as_str();
+    let args = App::new("Twatter")
+        .arg(
+            Arg::with_name("release")
+                .short("r")
+                .long("release")
+                .value_name("$(uname -r)")
+                .takes_value(true)
+                .required(true)
+                .default_value(release),
+        )
+        .get_matches();
+    let disk_release = args.value_of("release").unwrap();
 
     let ctx = kmod::Context::new().expect("Kmod context failed");
 
-    // Find all loaded kmod file names
-    let loaded_kmods: Vec<kmod::Module> = ctx.modules_loaded().unwrap().enumerate().map(|(_, m)| m).collect();
-    println!("Loaded kmods: {}", loaded_kmods.len());
+    // Loaded mods
+    let mut loaded_kmods: HashSet<String> = ctx
+        .modules_loaded()
+        .unwrap()
+        .enumerate()
+        .map(|(_, m)| path_to_modpath(m.path()))
+        .collect();
+    // Also add builtins to loaded, but from the running kernel
+    read_builtins(&mut loaded_kmods, release);
 
-    // Load each available .ko file as a Module
-    let args: Vec<String> = std::env::args().collect();
-    let kmod_files = match args.get(1) {
-        Some(kver) => find_insertable_kmods(kver.as_str()),
-        None => {
-            let uts = Uname::new().expect("Uname not working");
-            find_insertable_kmods(uts.release.as_str())
-        }
-    };
+    // Disk mods
+    let mut disk_kmods: HashSet<String> = HashSet::new();
+    // For now, the disk kmods are the same as the running kernel
+    read_disk_kmods(&ctx, &loaded_kmods, &mut disk_kmods, disk_release);
+    read_builtins(&mut disk_kmods, disk_release);
 
-    let available_kmods: Vec<kmod::Module> = kmod_files.iter().map(|path| ctx.module_new_from_path(path).unwrap()).collect();
-    println!("Available kmods: {}", available_kmods.len());
+    // Find differences
+    let missing_disk_kmods: HashSet<String> = disk_kmods
+        .iter()
+        .filter(|i| !loaded_kmods.contains(*i))
+        .cloned()
+        .collect();
 
-    which_kmods_are_loaded(&loaded_kmods, &available_kmods);
+    let missing_loaded_kmods: HashSet<String> = loaded_kmods
+        .iter()
+        .filter(|i| !disk_kmods.contains(*i))
+        .cloned()
+        .collect();
+
+    // Print differences
+    for loaded in &loaded_kmods {
+        println!("Loaded: {}", loaded);
+    }
+
+    for disk in &disk_kmods {
+        println!("On disk: {}", disk);
+    }
+
+    for missing in &missing_loaded_kmods {
+        println!("Missing in loaded kmods: {}", missing);
+    }
+
+    for missing in &missing_disk_kmods {
+        println!("Missing on disk: {}", missing);
+    }
 }
 
 #[test]
