@@ -1,4 +1,4 @@
-use clap::{App, Arg, SubCommand};
+use clap::{App, Arg};
 use std::collections::HashSet;
 use std::fs;
 use std::iter::Iterator;
