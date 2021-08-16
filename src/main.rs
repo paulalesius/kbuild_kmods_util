@@ -55,7 +55,7 @@ fn read_builtins(loaded_kmods: &mut HashSet<String>, release: &str) {
 fn main() {
     let release = Uname::new().unwrap().release;
     let release = release.as_str();
-    let args = App::new("Twatter")
+    let args = App::new("KBuild kmods util")
         .arg(
             Arg::with_name("release")
                 .short("r")

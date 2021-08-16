@@ -4,9 +4,7 @@ This utility will print which of the kernel modules are loaded by the running ke
 
 ## Building & running
     $ cargo build --release
-    $ target/release/kbuild_kmods_util --help
-    
-    Twatter 
+    $ target/release/kbuild_kmods_util --help 
     
     USAGE:
         kbuild_kmods_util --release <$(uname -r)>
